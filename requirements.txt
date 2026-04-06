@@ -1,3 +1,2 @@
-streamlit
-selenium
-pandas
+streamlit>=1.35.0
+seleniumbase>=4.29.0  
