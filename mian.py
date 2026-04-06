@@ -1,116 +1,74 @@
 import streamlit as st
-import re
-import logging
-import pandas as pd
-from concurrent.futures import ThreadPoolExecutor
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-
-# ==========================================
-# 0. 基础配置
-# ==========================================
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger(__name__)
-
-BASE_URL = "https://gzw.ningbo.gov.cn"
-TARGET_URL = f"{BASE_URL}/col/col1229116730/"
-LIST_XPATH = '/html/body/div/div[3]/div/div/div[2]/div/div/div/ul'
+import time
 
 def get_driver():
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
+    options = Options()
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
     
-    # ✅ 必须添加伪装的 User-Agent
+    # ✅ 关键：伪装 User-Agent，防止被政府网站防火墙拦截
     ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-    chrome_options.add_argument(f'user-agent={ua}')
+    options.add_argument(f'user-agent={ua}')
     
-    # 禁用图片提升速度
+    # 禁用图片加载提高速度
     prefs = {"profile.managed_default_content_settings.images": 2}
-    chrome_options.add_experimental_option("prefs", prefs)
+    options.add_experimental_option("prefs", prefs)
 
+    # 指向 Streamlit Cloud 预装的驱动
     service = Service("/usr/bin/chromedriver")
-    driver = webdriver.Chrome(service=service, options=chrome_options)
+    driver = webdriver.Chrome(service=service, options=options)
     return driver
 
-# ==========================================
-# 1. 爬虫核心逻辑 (同步多线程版)
-# ==========================================
-def scrape_list():
-    driver = get_driver()
-    try:
-        driver.get(TARGET_URL)
-        wait = WebDriverWait(driver, 15)
-        wait.until(EC.presence_of_element_located((By.XPATH, LIST_XPATH)))
-        
-        items = []
-        lis = driver.find_elements(By.XPATH, f"{LIST_XPATH}/li")
-        for li in lis:
-            try:
-                a = li.find_element(By.TAG_NAME, "a")
-                p = li.find_element(By.TAG_NAME, "p")
-                href = a.get_attribute("href")
-                title = a.text.strip()
-                time = p.text.strip()
-                if href.startswith("/"): href = BASE_URL + href
-                items.append({"href": href, "title": title, "public_time": time})
-            except: continue
-        return items
-    finally:
-        driver.quit()
+st.title("🏛️ 宁波国资委列表抓取测试")
 
-def scrape_detail_worker(item):
-    driver = get_driver()
-    try:
-        driver.get(item["href"])
-        # 复用你原本的 JS 解析逻辑
-        item["summary"] = driver.execute_script("""
-            const zoom = document.getElementById('zoom');
-            if (!zoom) return "";
-            let text = zoom.innerText || zoom.textContent;
-            return text.trim();
-        """)
-        # 提取来源
+TARGET_URL = "https://gzw.ningbo.gov.cn/col/col1229116730/"
+# 你提供的精确 XPath
+TARGET_XPATH = '//*[@id="jw_sgzw_二级栏目列表_标题list"]/div/div/ul'
+
+if st.button("🔍 开始定位并抓取"):
+    with st.spinner("正在打开页面..."):
+        driver = get_driver()
         try:
-            info_text = driver.find_element(By.XPATH, '//*[@id="right"]/div[1]').text
-            source_match = re.search(r'来源[：:]\s*([^|]+)', info_text)
-            item["source"] = source_match.group(1).strip() if source_match else ""
-        except:
-            item["source"] = "未知"
-    except Exception as e:
-        logger.error(f"详情页失败: {item['href']} | {e}")
-        item["summary"] = "抓取失败"
-    finally:
-        driver.quit()
-    return item
-
-# ==========================================
-# 2. Streamlit 界面
-# ==========================================
-st.set_page_config(page_title="Selenium 爬虫测试", layout="wide")
-st.title("🕷️ 宁波国资委公告 (Selenium 多线程优化版)")
-
-if st.button("🚀 开始爬取", type="primary"):
-    with st.status("正在抓取...", expanded=True) as status:
-        status.write("正在解析列表页...")
-        list_items = scrape_list()
-        
-        if list_items:
-            status.write(f"发现 {len(list_items)} 条公告，正在并发解析详情...")
-            # Streamlit Cloud 内存小，建议 max_workers 设为 2 或 3
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                final_results = list(executor.map(scrape_detail_worker, list_items))
+            driver.get(TARGET_URL)
             
-            status.update(label="抓取完成！", state="complete")
-            df = pd.DataFrame(final_results)
-            st.dataframe(df[['title', 'public_time', 'source', 'href']], use_container_width=True)
+            # 增加显式等待，最长等待 20 秒
+            wait = WebDriverWait(driver, 20)
             
-            with st.expander("查看第一条公告正文"):
-                st.write(final_results[0].get("summary", "无内容"))
-        else:
-            status.update(label="未能获取列表", state="error")
+            st.write("⏳ 正在等待元素加载...")
+            # 定位到 ul 容器
+            ul_element = wait.until(
+                EC.presence_of_element_located((By.XPATH, TARGET_XPATH))
+            )
+            
+            # 获取该 ul 下所有的 li
+            lis = ul_element.find_elements(By.TAG_NAME, "li")
+            
+            if lis:
+                st.success(f"✅ 成功找到 {len(lis)} 条记录！")
+                
+                # 提取文本并显示
+                results = [li.text.strip() for li in lis if li.text.strip()]
+                
+                for index, text in enumerate(results):
+                    st.write(f"**{index + 1}.** {text}")
+            else:
+                st.warning("找到了容器，但里面没有 li 元素。")
+                
+        except Exception as e:
+            st.error(f"❌ 抓取失败!")
+            st.code(str(e))
+            # 调试：抓取当前页面源码片段，看看是不是被防火墙挡了
+            if "driver" in locals():
+                st.write("页面源码片段 (用于排查):")
+                st.text(driver.page_source[:500])
+        finally:
+            if "driver" in locals():
+                driver.quit()
