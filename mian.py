@@ -1,7 +1,9 @@
 import streamlit as st
 from seleniumbase import Driver
 import pandas as pd
-
+import os
+# 1. 强制设置环境变量，让 SeleniumBase 使用 /tmp 目录存放驱动
+os.environ["SELENIUMBASE_DRIVERS_PATH"] = "/tmp/seleniumbase_drivers"
 st.set_page_config(page_title="简易爬虫器", layout="centered")
 
 st.title("🌐 SeleniumBase 爬虫演示")
@@ -12,9 +14,14 @@ url = st.text_input("请输入网址:", "https://www.example.com")
 if st.button("开始爬取"):
     with st.spinner("正在启动浏览器并抓取数据..."):
         try:
-            # 初始化浏览器驱动
-            # uc=True 开启反检测模式，headless=True 是云端运行必须的
-            driver = Driver(browser="chrome", headless=True, uc=True)
+            # 2. 初始化驱动
+            # 显式指定 driver_path 指向刚才设置的环境变量路径
+            driver = Driver(
+                browser="chrome", 
+                headless=True, 
+                uc=True,
+                driver_path="/tmp/seleniumbase_drivers" 
+            )
             
             driver.get(url)
             page_title = driver.get_title()
