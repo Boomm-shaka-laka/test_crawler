@@ -21,20 +21,18 @@ TARGET_URL = f"{BASE_URL}/col/col1229116730/"
 LIST_XPATH = '/html/body/div/div[3]/div/div/div[2]/div/div/div/ul'
 
 def get_driver():
-    """配置原生 Selenium 驱动，实现极致加载速度"""
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
     
-    # ✅ 替代拦截器方案 1: 禁用图片加载 (最有效)
+    # ✅ 必须添加伪装的 User-Agent
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+    chrome_options.add_argument(f'user-agent={ua}')
+    
+    # 禁用图片提升速度
     prefs = {"profile.managed_default_content_settings.images": 2}
     chrome_options.add_experimental_option("prefs", prefs)
-    
-    # ✅ 替代拦截器方案 2: 禁用 CSS 和 JavaScript 某些特性 (可选)
-    # chrome_options.add_argument("--disable-extensions")
-    # chrome_options.add_argument("--blink-settings=imagesEnabled=false")
 
     service = Service("/usr/bin/chromedriver")
     driver = webdriver.Chrome(service=service, options=chrome_options)
