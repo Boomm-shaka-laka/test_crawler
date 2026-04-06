@@ -3,7 +3,7 @@ import re
 import logging
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
-from seleniumwire import webdriver  # 使用 selenium-wire 拦截请求
+from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -20,50 +20,34 @@ BASE_URL = "https://gzw.ningbo.gov.cn"
 TARGET_URL = f"{BASE_URL}/col/col1229116730/"
 LIST_XPATH = '/html/body/div/div[3]/div/div/div[2]/div/div/div/ul'
 
-# ==========================================
-# 1. 辅助函数 (保持 Markdown 转换逻辑)
-# ==========================================
-def table_to_markdown(headers, rows):
-    if not headers and not rows: return ""
-    def esc(x): return str(x).replace("|", "\\|").replace("\n", " ").strip()
-    header = "| " + " | ".join(esc(h) for h in headers) + " |"
-    sep = "| " + " | ".join("---" for _ in headers) + " |"
-    body = ["| " + " | ".join(esc(c) for c in r) + " |" for r in rows]
-    return "\n".join([header, sep] + body)
-
 def get_driver():
-    """配置并返回 Selenium 驱动"""
+    """配置原生 Selenium 驱动，实现极致加载速度"""
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
     
-    # 重点：Selenium-wire 拦截配置
-    wire_options = {
-        'ignore_http_methods': ['OPTIONS'],
-        # 拦截图片、样式和字体以提高速度
-        'request_storage_base_dir': '/tmp/seleniumwire' 
-    }
+    # ✅ 替代拦截器方案 1: 禁用图片加载 (最有效)
+    prefs = {"profile.managed_default_content_settings.images": 2}
+    chrome_options.add_experimental_option("prefs", prefs)
     
+    # ✅ 替代拦截器方案 2: 禁用 CSS 和 JavaScript 某些特性 (可选)
+    # chrome_options.add_argument("--disable-extensions")
+    # chrome_options.add_argument("--blink-settings=imagesEnabled=false")
+
     service = Service("/usr/bin/chromedriver")
-    driver = webdriver.Chrome(service=service, options=chrome_options, seleniumwire_options=wire_options)
-    
-    # 定义拦截规则 (模拟 Playwright 的 route)
-    def interceptor(request):
-        if request.path.endswith(('.png', '.jpg', '.gif', '.css', '.woff', '.woff2')):
-            request.abort()
-            
-    driver.request_interceptor = interceptor
+    driver = webdriver.Chrome(service=service, options=chrome_options)
     return driver
 
 # ==========================================
-# 2. 爬虫任务逻辑
+# 1. 爬虫核心逻辑 (同步多线程版)
 # ==========================================
 def scrape_list():
     driver = get_driver()
     try:
         driver.get(TARGET_URL)
-        wait = WebDriverWait(driver, 20)
+        wait = WebDriverWait(driver, 15)
         wait.until(EC.presence_of_element_located((By.XPATH, LIST_XPATH)))
         
         items = []
@@ -75,6 +59,7 @@ def scrape_list():
                 href = a.get_attribute("href")
                 title = a.text.strip()
                 time = p.text.strip()
+                if href.startswith("/"): href = BASE_URL + href
                 items.append({"href": href, "title": title, "public_time": time})
             except: continue
         return items
@@ -82,65 +67,52 @@ def scrape_list():
         driver.quit()
 
 def scrape_detail_worker(item):
-    """单个详情页抓取工人"""
     driver = get_driver()
     try:
         driver.get(item["href"])
-        
-        # 提取来源和时间
-        try:
-            info_text = driver.find_element(By.XPATH, '//*[@id="right"]/div[1]').text
-            source = re.search(r'来源[：:]\s*([^|]+)', info_text)
-            item["source"] = source.group(1).strip() if source else ""
-        except:
-            item["source"] = ""
-
-        # 解析正文为 Markdown (执行 JS 逻辑)
+        # 复用你原本的 JS 解析逻辑
         item["summary"] = driver.execute_script("""
             const zoom = document.getElementById('zoom');
             if (!zoom) return "";
-            let res = "";
-            function walk(node){
-                if(node.nodeType === 3){
-                    const t = node.textContent.trim();
-                    if(t) res += t + "\\n";
-                } else if(node.nodeType === 1){
-                    if(node.tagName === 'TABLE'){
-                        res += "\\n[表格内容已略]\\n"; // 简单处理，或复用你原有的表格 JS 逻辑
-                    } else {
-                        node.childNodes.forEach(walk);
-                    }
-                }
-            }
-            walk(zoom);
-            return res;
+            let text = zoom.innerText || zoom.textContent;
+            return text.trim();
         """)
+        # 提取来源
+        try:
+            info_text = driver.find_element(By.XPATH, '//*[@id="right"]/div[1]').text
+            source_match = re.search(r'来源[：:]\s*([^|]+)', info_text)
+            item["source"] = source_match.group(1).strip() if source_match else ""
+        except:
+            item["source"] = "未知"
     except Exception as e:
-        logger.error(f"详情页抓取失败: {e}")
+        logger.error(f"详情页失败: {item['href']} | {e}")
+        item["summary"] = "抓取失败"
     finally:
         driver.quit()
     return item
 
 # ==========================================
-# 3. Streamlit UI
+# 2. Streamlit 界面
 # ==========================================
-st.title("🕷️ 宁波国资委公告爬虫 (Selenium 多线程版)")
+st.set_page_config(page_title="Selenium 爬虫测试", layout="wide")
+st.title("🕷️ 宁波国资委公告 (Selenium 多线程优化版)")
 
 if st.button("🚀 开始爬取", type="primary"):
-    with st.status("正在抓取数据...", expanded=True) as status:
-        # 1. 抓取列表
-        status.write("正在获取列表页...")
+    with st.status("正在抓取...", expanded=True) as status:
+        status.write("正在解析列表页...")
         list_items = scrape_list()
         
-        # 2. 并发抓取详情 (模拟 Playwright 的并发)
-        status.write(f"正在并发抓取 {len(list_items)} 条详情 (使用线程池)...")
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            final_results = list(executor.map(scrape_detail_worker, list_items))
-        
-        status.update(label="爬取完成！", state="complete")
-        
-        if final_results:
+        if list_items:
+            status.write(f"发现 {len(list_items)} 条公告，正在并发解析详情...")
+            # Streamlit Cloud 内存小，建议 max_workers 设为 2 或 3
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                final_results = list(executor.map(scrape_detail_worker, list_items))
+            
+            status.update(label="抓取完成！", state="complete")
             df = pd.DataFrame(final_results)
             st.dataframe(df[['title', 'public_time', 'source', 'href']], use_container_width=True)
-            with st.expander("查看首条正文"):
-                st.markdown(final_results[0].get("summary", "无内容"))
+            
+            with st.expander("查看第一条公告正文"):
+                st.write(final_results[0].get("summary", "无内容"))
+        else:
+            status.update(label="未能获取列表", state="error")
